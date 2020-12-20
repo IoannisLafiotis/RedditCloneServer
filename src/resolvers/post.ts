@@ -1,51 +1,218 @@
-import {Resolver, Query, Ctx, Arg, Int, Mutation} from "type-graphql";
+import {Resolver, Query,  Arg, Int, Mutation, InputType, Field, Ctx, UseMiddleware, FieldResolver, Root, ObjectType} from "type-graphql";
 import { Post } from "../entities/Post";
-import {MyContext} from "../types"
-// import { title } from "process";
+import { MyContext } from "../types";
+import { isAuth } from "../middleware/isAuth";
+import { getConnection } from "typeorm";
+import { Updoot } from "../entities/Updoot";
+import { User } from "../entities/User";
+// import { Updoot } from "../entities/Updoot";
 
-@Resolver()
+@InputType()
+class PostInput {
+    @Field()
+    title:string;
+    @Field()
+    text:string;
+}
+
+
+@ObjectType()
+class PaginatedPosts {
+    @Field(() => [Post])
+    posts: Post[]
+    @Field()
+    hasMore: boolean;
+}
+
+
+@Resolver(Post)
 export class PostResolver {
-    @Query(() => [Post])
-        posts(@Ctx() {em}: MyContext):Promise<Post[]>{
-            return em.find(Post,{});
+    @FieldResolver(() => String)
+    textSnippet(@Root() post:Post){
+        return post.text.slice(0,50)
+    }
+
+    @FieldResolver(() => User)
+    creator(@Root() post:Post,
+    @Ctx() {userLoader}: MyContext
+    ){
+        return userLoader.load(post.creatorId);
+    }
+
+    @FieldResolver(() => User)
+    async voteStatus(@Root() post:Post,
+    @Ctx() {updootLoader ,req}: MyContext
+    ){
+        const updoot = await updootLoader.load({postId:post.id, userId: req.session.userId})
+        return updoot ? updoot.value : null;
+    }
+
+    @Mutation(() => Boolean)
+    @UseMiddleware(isAuth)
+    async vote(
+        @Arg("postId",() => Int) postId: number,
+        @Arg("value",() => Int) value: number,
+        @Ctx(){req}:MyContext
+    ){
+        const isUpdoot = value !== -1;
+        const realValue = isUpdoot ? 1 : -1;
+        const {userId} = req.session;
+        const updoot = await Updoot.findOne({where: {postId,userId}})
+
+        // the use has voted on the post before
+        if(updoot && updoot.value !== realValue){
+            await getConnection().transaction(async tm => {
+            await tm.query(
+               ` 
+                update post 
+                set value = $1
+                where "postId" = $2 and "userId" = $3;	            
+                `,[realValue,postId,userId]
+
+            )        
+            await tm.query(
+                ` 
+                 update post 
+                 set points = points + $1
+                 where id = $2	            
+                 `,[2 * realValue,postId]
+             )     
+            }
+            )} else if( !updoot) {
+            // has never vores before
+            await getConnection().transaction(async tm => {
+                await tm.query(`
+                insert into updoot ("userId","postId", value)
+                values ($1,$2,$3);
+                `,[userId,postId,realValue]);
+                await tm.query(`
+                update post 
+                set points = points + $1
+                where id = $2;
+                `,[realValue,postId])
+            })
+        }
+
+        // await Updoot.insert({
+        //     userId,
+        //     postId,
+        //     value: realValue
+        // })
+
+        return true
+    }
+
+
+
+
+    @Query(() => PaginatedPosts)
+        async posts(
+            @Arg("limit" , () => Int) limit:number,
+            @Arg("cursor", () => String, {nullable:true}) cursor: string | null,
+            @Ctx() {}: MyContext
+        ):Promise<PaginatedPosts>{
+            const realLimit = Math.min(50,limit);
+            const realLimitPlusOne = realLimit + 1;
+
+            const replacements: any[] = [realLimitPlusOne];
+
+           
+            if (cursor) {
+                replacements.push(new Date(parseInt(cursor)));
+
+              }
+          
+              // check the videos to see how to figure it out
+            const posts = await getConnection().query(
+                  `
+              select p.*
+              from post p
+              ${cursor ? `where p."createdAt" < $2` : ""}
+              order by p."createdAt" DESC,
+              limit $1
+              `,
+                replacements 
+              );
+          
+            // const qb = getConnection()
+            //     .getRepository(Post)
+            //     .createQueryBuilder("p")
+            //     .innerJoinAndSelect(
+            //         "p.creator",
+            //         "u",
+            //         'u.id = : p."creatorId"'
+            //     )
+            //     .orderBy('p."createdAt"',"DESC")
+            //     .take(realLimitPlusOne)
+
+            // if(cursor){
+            //     qb.where('ps."createdAt < :cursor',{cursor: new Date(parseInt(cursor))})
+            // }
+            // const posts = await qb.getMany()
+
+            return { posts: posts.slice(0, realLimit) , hasMore: posts.length === realLimitPlusOne};
+
         } 
 
         @Query(() => Post , {nullable: true})
         post(
-        @Arg("id",() => Int) id: number,
-        @Ctx() {em}: MyContext):Promise<Post | null>{
-            return em.findOne(Post,{id});
+        @Arg("id",() => Int) id: number)
+        :Promise<Post | undefined>{
+            return Post.findOne(id);
         } 
         
         @Mutation(() => Post)
+        @UseMiddleware(isAuth)
         async createPost(
-        @Arg("title",() => String) title: string,
-        @Ctx() {em}: MyContext):Promise<Post>{
-            const post = em.create(Post,{title})
-            await em.persistAndFlush(post)
-            return post;
+        @Arg("input") input: PostInput,
+        @Ctx() {req}:MyContext 
+        )
+        :Promise<Post>{
+            if (!req.session.userId){
+                throw new Error("Not authenticated!")
+            }
+            return Post.create(
+                {
+                    ...input,
+                    creatorId:req.session.userId
+                }).save()
         } 
+        /// add the args to the mutations
         @Mutation(() => Post, {nullable:true})
+        @UseMiddleware(isAuth)
         async updatePost(
         @Arg("id",() => Int) id: number,
         @Arg("title",() => String, {nullable:true}) title: string,
-        @Ctx() {em}: MyContext):Promise<Post | null>{
-            const post = await em.findOne(Post,{id});
-            if(!post){
-                return null;
-            }
-            if(typeof title !== "undefined"){
-                post.title = title;
-                await em.persistAndFlush(post)
-            }
-            return post;
+        @Arg("text",() => String, {nullable:true}) text: string,
+        @Ctx() {req}:MyContext)
+        :Promise<Post | null> {
+          const result = await  getConnection()
+    .createQueryBuilder()
+    .update(Post)
+    .set({ title , text   })
+    .where('id = :id and "creatorId" = :creatorId', { id,creatorId: req.session.userId })
+    .returning("*")
+    .execute();
+            console.log("result::",result);
+           return result.raw[0];   
         } 
         @Mutation(() => Boolean)
+        @UseMiddleware(isAuth)
         async deletePost(
         @Arg("id",() => Int) id: number,
-        @Ctx() {em}: MyContext)
-        :Promise<boolean>{
-            await em.nativeDelete(Post, {id});
+        @Ctx() {req}:MyContext 
+        )
+        :Promise<boolean> {
+            // not cascading way
+            // const post = await Post.findOne(id);
+            // if(!post){
+            //     return false
+            // }
+            // if(post.creatorId !== req.session.userId){
+            //     throw new Error("not authorized!")
+            // }
+            // await Updoot.delete({postId:id})
+            await Post.delete({ id, creatorId: req.session.userId});
             return true;
         } 
     } 
