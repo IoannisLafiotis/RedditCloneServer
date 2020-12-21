@@ -10,7 +10,9 @@
     "start": "node dist/index.js",
     "start2": "ts-node src/index.ts",
     "dev2": "nodemon --exec src/index.ts",
-    "create:migration": "mikro-orm migration:create"
+    "create:migration": "typeorm migration:create",
+    "gen-env": "gen-env-types .env -o src/env.d.ts -e ."
+
   },
   "keywords": [],
   "author": "",
@@ -23,7 +25,9 @@
     "@types/redis": "^2.8.28",
     "nodemon": "^2.0.6",
     "ts-node": "^9.0.0",
-    "typescript": "^4.0.5"
+    "typescript": "^4.0.5",
+    "gen-env-types": "^1.0.3"
+
   },
   "mikro-orm": {
     "useTsNode": true,

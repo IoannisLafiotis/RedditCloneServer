@@ -1,6 +1,6 @@
 import "reflect-metadata";
 // import { MikroORM } from "@mikro-orm/core";
-import { __prod__, COOKIE_NAME } from "./entities";
+import { __prod__, COOKIE_NAME } from "./constants";
 // import { Post } from "./entities/Post";
 // import mikroConfig from "./mikro-orm.config";
 import express from "express";
@@ -34,12 +34,13 @@ const main = async () => {
         entities:[User,Post,Updoot]
     })
 
+// console.log(conn);
     const app = express();
 
 
     const RedisStore = connectRedis(session)
     const redis = new Redis();
-
+    app.set("trust proxy",1)
     app.use(cors({
         origin:"http://localhost:3000",
         credentials:true
